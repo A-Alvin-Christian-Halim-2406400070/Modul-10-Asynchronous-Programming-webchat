@@ -9,6 +9,9 @@ use crate::{services::websocket::WebsocketService, User};
 pub enum Msg {
     HandleMsg(String),
     SubmitMessage,
+    StartReply(usize),
+    CancelReply,
+    AddEmoji(&'static str),
 }
 
 #[derive(Deserialize)]
@@ -45,6 +48,7 @@ pub struct Chat {
     _producer: Box<dyn Bridge<EventBus>>,
     wss: WebsocketService,
     messages: Vec<MessageData>,
+    reply_to: Option<usize>,
 }
 impl Component for Chat {
     type Message = Msg;
@@ -75,6 +79,7 @@ impl Component for Chat {
         Self {
             users: vec![],
             messages: vec![],
+            reply_to: None,
             chat_input: NodeRef::default(),
             wss,
             _producer: EventBus::bridge(ctx.link().callback(Msg::HandleMsg)),
@@ -115,9 +120,19 @@ impl Component for Chat {
             Msg::SubmitMessage => {
                 let input = self.chat_input.cast::<HtmlInputElement>();
                 if let Some(input) = input {
+                    let mut outgoing = input.value();
+                    if outgoing.trim().is_empty() {
+                        return false;
+                    }
+                    if let Some(reply_index) = self.reply_to {
+                        if let Some(reply_msg) = self.messages.get(reply_index) {
+                            outgoing =
+                                format!("Reply to {}: \"{}\" | {}", reply_msg.from, reply_msg.message, outgoing);
+                        }
+                    }
                     let message = WebSocketMessage {
                         message_type: MsgTypes::Message,
-                        data: Some(input.value()),
+                        data: Some(outgoing),
                         data_array: None,
                     };
                     if let Err(e) = self
@@ -129,7 +144,24 @@ impl Component for Chat {
                         log::debug!("error sending to channel: {:?}", e);
                     }
                     input.set_value("");
+                    self.reply_to = None;
                 };
+                false
+            }
+            Msg::StartReply(index) => {
+                self.reply_to = Some(index);
+                true
+            }
+            Msg::CancelReply => {
+                self.reply_to = None;
+                true
+            }
+            Msg::AddEmoji(emoji) => {
+                if let Some(input) = self.chat_input.cast::<HtmlInputElement>() {
+                    let mut value = input.value();
+                    value.push_str(emoji);
+                    input.set_value(&value);
+                }
                 false
             }
         }
@@ -137,6 +169,11 @@ impl Component for Chat {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let submit = ctx.link().callback(|_| Msg::SubmitMessage);
+        let cancel_reply = ctx.link().callback(|_| Msg::CancelReply);
+        let add_smile = ctx.link().callback(|_| Msg::AddEmoji("🙂"));
+        let add_laugh = ctx.link().callback(|_| Msg::AddEmoji("😂"));
+        let add_fire = ctx.link().callback(|_| Msg::AddEmoji("🔥"));
+        let add_heart = ctx.link().callback(|_| Msg::AddEmoji("❤️"));
 
         html! {
             <div class="flex w-screen">
@@ -166,12 +203,13 @@ impl Component for Chat {
                     <div class="w-full h-14 border-b-2 border-gray-300"><div class="text-xl p-3">{"💬 Chat!"}</div></div>
                     <div class="w-full grow overflow-auto border-b-2 border-gray-300">
                         {
-                            self.messages.iter().map(|m| {
+                            self.messages.iter().enumerate().map(|(index, m)| {
                                 let user = self.users.iter().find(|u| u.name == m.from).unwrap();
+                                let reply = ctx.link().callback(move |_| Msg::StartReply(index));
                                 html!{
                                     <div class="flex items-end w-3/6 bg-gray-100 m-8 rounded-tl-lg rounded-tr-lg rounded-br-lg ">
                                         <img class="w-8 h-8 rounded-full m-3" src={user.avatar.clone()} alt="avatar"/>
-                                        <div class="p-3">
+                                        <div class="p-3 grow">
                                             <div class="text-sm">
                                                 {m.from.clone()}
                                             </div>
@@ -183,6 +221,9 @@ impl Component for Chat {
                                                 }
                                             </div>
                                         </div>
+                                        <button onclick={reply} class="mx-3 mb-3 px-2 py-1 text-xs bg-white rounded border border-gray-300 hover:bg-gray-200">
+                                            {"Reply"}
+                                        </button>
                                     </div>
                                 }
                             }).collect::<Html>()
@@ -190,6 +231,32 @@ impl Component for Chat {
 
                     </div>
                     <div class="w-full h-14 flex px-3 items-center">
+                        {
+                            if let Some(reply_index) = self.reply_to {
+                                if let Some(reply_msg) = self.messages.get(reply_index) {
+                                    html! {
+                                        <div class="absolute bottom-16 left-64 right-6 bg-blue-50 border border-blue-200 rounded px-3 py-2 flex justify-between items-center text-xs">
+                                            <div>
+                                                {format!("Replying to {}: {}", reply_msg.from, reply_msg.message)}
+                                            </div>
+                                            <button onclick={cancel_reply} class="ml-3 text-blue-700 underline">
+                                                {"Cancel"}
+                                            </button>
+                                        </div>
+                                    }
+                                } else {
+                                    html! {}
+                                }
+                            } else {
+                                html! {}
+                            }
+                        }
+                        <div class="flex gap-1">
+                            <button onclick={add_smile} class="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">{"🙂"}</button>
+                            <button onclick={add_laugh} class="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">{"😂"}</button>
+                            <button onclick={add_fire} class="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">{"🔥"}</button>
+                            <button onclick={add_heart} class="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">{"❤️"}</button>
+                        </div>
                         <input ref={self.chat_input.clone()} type="text" placeholder="Message" class="block w-full py-2 pl-4 mx-3 bg-gray-100 rounded-full outline-none focus:text-gray-700" name="message" required=true />
                         <button onclick={submit} class="p-3 shadow-sm bg-blue-600 w-10 h-10 rounded-full flex justify-center items-center color-white">
                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" class="fill-white">
